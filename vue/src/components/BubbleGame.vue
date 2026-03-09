@@ -59,13 +59,19 @@
         :left="bubble.x"
         :top="bubble.y"
         :size="bubble.r * 2"
+        :sizeType="bubble.size"
       />
     </div>
   </div>
 </template>
 
 <script>
-import { GAME_COLORS, GAME_DEFAULTS } from '@/constants/gameConfig.js'
+import {
+  GAME_COLORS,
+  GAME_DEFAULTS,
+  BUBBLE_RULES
+} from '@/constants/gameConfig.js'
+import { mapActions } from 'vuex'
 import Bubble from '@/components/ui/Bubble.vue'
 
 export default {
@@ -145,6 +151,10 @@ export default {
 
   // стараться не трогать
   methods: {
+    ...mapActions('list', [
+      'setList'
+    ]),
+
     // старт + генерация
     startGame() {
       this.stopGame(false)
@@ -199,20 +209,97 @@ export default {
       this.isRunning = false
     },
 
+    getRadSize(size) {
+      return BUBBLE_RULES.rad[size] || BUBBLE_RULES.rad.medium
+    },
+
+    //редко - чаше - никогда
+    getRrmSize() {
+      const roll = Math.random()
+      if (roll < 0.15) {
+        return 'big'
+      }
+      if (roll < 0.75) {
+        return 'medium'
+      }
+      return 'small'
+    },
+
+    // штраф
+    getClickDelta(bubble) {
+      if (bubble.color === this.targetColor) {
+        return this.scoreHit
+      }
+      return BUBBLE_RULES.miss[bubble.size] || this.scoreMiss
+    },
+
+    getFallDelta(bubble) {
+      if (bubble.color !== this.targetColor) {
+        return 0
+      }
+      return BUBBLE_RULES.fall[bubble.size] || 0
+    },
+
+    getFieldSize() {
+      const fieldWidth = this.$refs.gameField ? this.$refs.gameField.clientWidth : 640
+      const fieldHeight = this.$refs.gameField ? this.$refs.gameField.clientHeight : 480
+      return {
+        fieldWidth,
+        fieldHeight
+      }
+    },
+
+    fitPos(bubble, fieldWidth, fieldHeight) {
+      const maxX = Math.max(0, fieldWidth - bubble.r * 2)
+      const maxY = Math.max(0, fieldHeight - bubble.r * 2)
+      return {
+        ...bubble,
+        x: Math.min(Math.max(0, bubble.x), maxX),
+        y: Math.min(Math.max(0, bubble.y), maxY)
+      }
+    },
+
+    // пузырь
+    makeBubble(params = {}) {
+      const { fieldWidth } = this.getFieldSize()
+      const limit = Math.max(1, Math.min(this.colorsCount, GAME_COLORS.length))
+      const colors = GAME_COLORS.slice(0, limit)
+      const size = params.size || this.getRrmSize()
+      const r = this.getRadSize(size)
+      const maxX = Math.max(0, fieldWidth - r * 2)
+      const x = typeof params.x === 'number'
+        ? Math.min(Math.max(0, params.x), maxX)
+        : Math.floor(Math.random() * (maxX + 1))
+      const y = typeof params.y === 'number' ? params.y : 0
+      const color = params.color || colors[Math.floor(Math.random() * colors.length)]
+
+      const bubble = {
+        id: this.nextId,
+        color,
+        // imageUrl,
+        x,
+        y,
+        r,
+        size,
+        impX: typeof params.impX === 'number' ? params.impX : 0,
+        impY: typeof params.impY === 'number' ? params.impY : 0,
+        vx: typeof params.vx === 'number' ? params.vx : Math.random() * 0.7 - 0.35 //при создании +-дрейф ... связь с nextX
+      }
+
+      this.nextId += 1
+      return bubble
+    },
+
     // пузырь в рандом месте
     createBubble() {
       if (!this.isRunning) {
         return
       }
 
-      const limit = Math.max(1, Math.min(this.colorsCount, GAME_COLORS.length))
-      const colors = GAME_COLORS.slice(0, limit)
-      const color = colors[Math.floor(Math.random() * colors.length)]
-      // const images = BUBBLE_IMAGE_MAP[color] || []
-      // const imageUrl = images.length ? images[Math.floor(Math.random() * images.length)] : null
-
-      const r = Math.floor(Math.random() * 26) + 20
-      const fieldWidth = this.$refs.gameField ? this.$refs.gameField.clientWidth : 640
+      // новая позиция пузыря
+      const { fieldWidth } = this.getFieldSize()
+      const size = this.getRrmSize()
+      const r = this.getRadSize(size)
       const maxX = Math.max(0, fieldWidth - r * 2)
       let x = Math.floor(Math.random() * (maxX + 1))
 
@@ -224,32 +311,96 @@ export default {
         x = Math.min(Math.max(0, nearX), maxX)
       }
 
-      const bubble = {
-        id: this.nextId,
-        color,
-        // imageUrl,
+      const bubble = this.makeBubble({ //перенос в отдельный блок
         x,
         y: 0,
-        r,
-        vx: Math.random() * 0.7 - 0.35 //при создании +-дрейф ... связь с nextX
-      }
-
-      this.nextId += 1
+        size
+      })
       this.bubbles = [...this.bubbles, bubble]
     },
 
+    // дети пузыриков
+    createChildBubbles(parentBubble, count, childSize) {
+      const { fieldWidth, fieldHeight } = this.getFieldSize()
+      const colorLimit = Math.max(1, Math.min(this.colorsCount, GAME_COLORS.length))
+      const colors = GAME_COLORS.slice(0, colorLimit)
+      const childR = this.getRadSize(childSize)
+      const centerX = parentBubble.x + parentBubble.r
+      const centerY = parentBubble.y + parentBubble.r
+      const ringR = parentBubble.r + childR + 10
+
+      const otherColors = colors.filter((color) => color !== parentBubble.color)
+      const addColors = otherColors
+        .sort(() => Math.random() - 0.5)
+        .slice(0, Math.max(0, count - 1))
+      const colorList = [parentBubble.color, ...addColors]
+
+      while (colorList.length < count) {
+        colorList.push(colors[Math.floor(Math.random() * colors.length)])
+      }
+
+      return Array.from({ length: count }).map((_, index) => {
+        const angle = (Math.PI * 2 * index) / count
+        const x = centerX + Math.cos(angle) * ringR
+        const y = centerY + Math.sin(angle) * ringR
+        const bubble = this.makeBubble({
+          size: childSize,
+          color: colorList[index],
+          x: x - childR,
+          y: y - childR,
+          vx: Math.cos(angle) * 0.8
+        })
+        return this.fitPos(bubble, fieldWidth, fieldHeight)
+      })
+    },
+
+    // отталкивание от собратьев
+    PopImpulse(poppedBubble, sourceBubbles) {
+      const { fieldWidth, fieldHeight } = this.getFieldSize()
+      const centerX = poppedBubble.x + poppedBubble.r
+      const centerY = poppedBubble.y + poppedBubble.r
+      const nearR = poppedBubble.r * 4
+
+      return sourceBubbles.map((bubble) => {
+        const bubbleX = bubble.x + bubble.r
+        const bubbleY = bubble.y + bubble.r
+        const dx = bubbleX - centerX
+        const dy = bubbleY - centerY
+        const distance = Math.sqrt(dx * dx + dy * dy)
+
+        if (!distance || distance > nearR) {
+          return bubble
+        }
+
+        const poppedSize = poppedBubble.size || 'medium'
+        const bubbleSize = bubble.size || 'medium'
+        const force = (BUBBLE_RULES.push[poppedSize] && BUBBLE_RULES.push[poppedSize][bubbleSize]) || 0
+        if (!force) {
+          return bubble
+        }
+
+        const shift = poppedBubble.r * force
+        const nx = dx / distance
+        const ny = dy / distance
+        const moved = {
+          ...bubble,
+          impX: (bubble.impX || 0) + nx * shift * 0.22,
+          impY: (bubble.impY || 0) + ny * shift * 0.22
+        }
+        return this.fitPos(moved, fieldWidth, fieldHeight)
+      })
+    },
     tick() { // скорость пока тут
       if (this.isRunning) {
-        const fieldWidth = this.$refs.gameField ? this.$refs.gameField.clientWidth : 640
-        const fieldHeight = this.$refs.gameField ? this.$refs.gameField.clientHeight : 480
+        const { fieldWidth, fieldHeight } = this.getFieldSize()
 
         const movedBubbles = this.bubbles
           .map((bubble) => {
             const speedY = Math.random() * 0.8 + 0.4
             let vx = typeof bubble.vx === 'number' ? bubble.vx : Math.random() * 2 - 1
             const maxX = Math.max(0, fieldWidth - bubble.r * 2)
-            let nextX = bubble.x + vx
-            const nextY = bubble.y + speedY
+            let nextX = bubble.x + vx + (bubble.impX || 0)
+            const nextY = bubble.y + speedY + (bubble.impY || 0)
 
             // рикошет от левой/правой стены
             if (nextX <= 0) {
@@ -264,12 +415,26 @@ export default {
               ...bubble,
               x: nextX,
               y: nextY,
+              impX: (bubble.impX || 0) * 0.84,
+              impY: (bubble.impY || 0) * 0.84,
               vx
             }
           })
-          .filter((bubble) => bubble.y <= fieldHeight)
 
-        this.bubbles = movedBubbles
+        const aliveBubbles = movedBubbles.filter((bubble) => bubble.y <= fieldHeight)
+        const droppedBubbles = movedBubbles.filter((bubble) => bubble.y > fieldHeight)
+        const dropDelta = droppedBubbles.reduce((acc, bubble) => acc + this.getFallDelta(bubble), 0)
+
+        this.bubbles = aliveBubbles
+
+        // штраф
+        if (dropDelta !== 0) {
+          this.score += dropDelta
+          const list = this.$store.getters['list/getList']
+          const newList = [...list, { t: dropDelta }]
+          this.setList(newList)
+          this.$emit('update:score', this.score)
+        }
       }
 
       this.rafId = requestAnimationFrame(() => this.tick())
@@ -301,10 +466,20 @@ export default {
           return
         }
 
-        const delta = bubble.color === this.targetColor ? this.scoreHit : this.scoreMiss
+        const delta = this.getClickDelta(bubble)
         deltas.push(delta)
         nextScore += delta
+
+        if (bubble.size === 'big') {
+          const childBubbles = this.createChildBubbles(bubble, 3, 'medium')
+          nextBubbles = [...nextBubbles, ...childBubbles]
+        } else if (bubble.size === 'medium') {
+          const childBubbles = this.createChildBubbles(bubble, 5, 'small')
+          nextBubbles = [...nextBubbles, ...childBubbles]
+        }
+
         nextBubbles = nextBubbles.filter((item) => item.id !== numericId)
+        nextBubbles = this.PopImpulse(bubble, nextBubbles)
       })
 
       if (!deltas.length) {
@@ -316,7 +491,7 @@ export default {
 
       const list = this.$store.getters['list/getList']
       const newList = [...list, ...deltas.map((d) => ({ t: d }))]
-      this.$store.dispatch('list/setList', newList)
+      this.setList(newList)
 
       this.$emit('update:score', this.score)
     }
